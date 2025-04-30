@@ -1,3 +1,4 @@
+// main.cpp
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -11,6 +12,7 @@
 #include <memory>
 
 struct Config {
+    QString inputDir;
     QString fileMask;
     bool removeInputFiles;
     QString outputDir;
@@ -77,7 +79,7 @@ void processFile(const QString& filePath, const Config& config, std::shared_ptr<
 
 
 void scanAndProcess(const Config& config) {
-    QDir dir(".");
+    QDir dir(config.inputDir);
     QStringList files = dir.entryList(QStringList() << config.fileMask, QDir::Files);
     int total = files.size();
     if (total == 0) {
@@ -93,6 +95,7 @@ void scanAndProcess(const Config& config) {
 
     for (int i = 0; i < files.size(); ++i) {
         QString filePath = dir.filePath(files.at(i));
+        log("Starting: " + filePath);
         QFuture<void> future = QtConcurrent::run([filePath, config, processed, total, isFinalRun]() {
             processFile(filePath, config, processed, total);
             if (isFinalRun && processed->loadRelaxed() == total) {
@@ -103,11 +106,24 @@ void scanAndProcess(const Config& config) {
     }
 }
 
+#include <QSettings>
+
 int main(int argc, char *argv[]) {
     QCoreApplication app(argc, argv);
 
     Config config;
     QTextStream in(stdin);
+    QSettings settings("config.ini", QSettings::IniFormat);
+
+    config.inputDir = settings.value("inputDir").toString();
+    log("Enter input directory path [" + config.inputDir + "]: ");
+    QString temp = in.readLine().trimmed();
+    if (!temp.isEmpty()) config.inputDir = temp;
+    if (config.inputDir.isEmpty() || !QDir(config.inputDir).exists()) {
+        log("Input directory is invalid or does not exist.");
+        return 1;
+    }
+    settings.setValue("inputDir", config.inputDir);
 
     log("Enter file mask (e.g., *.txt): ");
     config.fileMask = in.readLine();
@@ -119,12 +135,15 @@ int main(int argc, char *argv[]) {
     log("Remove input files after processing? (yes/no): ");
     config.removeInputFiles = (in.readLine().trimmed().toLower() == "yes");
 
-    log("Enter output directory path: ");
-    config.outputDir = in.readLine();
+    config.outputDir = settings.value("outputDir").toString();
+    log("Enter output directory path [" + config.outputDir + "]: ");
+    temp = in.readLine().trimmed();
+    if (!temp.isEmpty()) config.outputDir = temp;
     if (config.outputDir.trimmed().isEmpty()) {
         log("Output directory must not be empty.");
         return 1;
     }
+    settings.setValue("outputDir", config.outputDir);
 
     log("Overwrite output files? (yes/no): ");
     config.overwriteFiles = (in.readLine().trimmed().toLower() == "yes");
@@ -135,6 +154,10 @@ int main(int argc, char *argv[]) {
     if (config.periodic) {
         log("Enter period in seconds: ");
         config.periodSeconds = in.readLine().toInt();
+        if (config.periodSeconds <= 0) {
+            log("Period must be greater than 0.");
+            return 1;
+        }
     }
 
     log("Enter 8-byte XOR value (hex, e.g., 0102030405060708): ");
@@ -146,11 +169,11 @@ int main(int argc, char *argv[]) {
     }
 
     if (config.periodic) {
-        QTimer timer;
-        QObject::connect(&timer, &QTimer::timeout, [&config]() {
+        QTimer* timer = new QTimer(&app);
+        QObject::connect(timer, &QTimer::timeout, [config]() {
             scanAndProcess(config);
         });
-        timer.start(config.periodSeconds * 1000);
+        timer->start(config.periodSeconds * 1000);
         scanAndProcess(config); // initial run
         return app.exec();
     } else {
